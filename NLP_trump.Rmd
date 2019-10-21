@@ -1,0 +1,125 @@
+---
+title: "M2_group"
+author: "Jess"
+date: "21 oktober 2019"
+output: html_document
+---
+
+```{r}
+if (!require("pacman")) install.packages("pacman") # package for loading and checking packages :)
+pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.)
+               magrittr, # For advanced piping (%>% et al.)
+               tidytext, # For text analysis
+               tm,
+               topicmodels,
+               RJSONIO,
+               lubridate,
+               wordcloud,
+               SnowballC
+)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+trump_tweet <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/Trump_tweets.csv") %>% select(-1) %>% rename(ID = id_str)
+
+
+trump_tidy <- trump_tweet %>%  
+  unnest_tokens(word, text) 
+
+trump_tidy %<>%
+  add_count(word, name = "nword") %>%
+  filter(nword > 1) %>%
+    select(-nword)
+
+trump_tidy %<>% 
+  group_by(word) %>% 
+  filter(n()>10) %>% 
+  ungroup()
+
+own_stopwords <- tibble(word= c("t.co", "https", "amp", "rstats","rt"),
+                        lexicon = "OWN")
+
+trump_tidy %<>%
+  anti_join(stop_words %>% bind_rows(own_stopwords), by = "word") 
+
+trump_tidy %<>%
+  mutate(word = word %>% str_remove_all("[^[:alnum:]]") ) %>%
+  filter(str_length(word) > 1) 
+
+trump_tidy %>% 
+  count(word, sort = TRUE) %>% 
+  head(20)
+
+trump_tidy %>% 
+  count(word, sort = TRUE) %>% 
+  head(20) %>% 
+  ggplot(aes(x = word %>% fct_reorder(n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Word Counts", 
+       x = "Frequency", 
+       y = "Top Words")
+
+```
+
+
+```{r}
+trump_top <- trump_tidy %>% 
+  count(word, sort = TRUE) %>% 
+  head(20)
+
+wordcloud(trump_top$word, trump_top$n, random.order = FALSE, max.words = 50, colors = brewer.pal(8,"Dark2"))
+```
+```{r}
+trump_IDF  <- trump_tidy %>% 
+  count(ID, word, sort = TRUE) %>% 
+  bind_tf_idf(word, ID, n)
+
+trump_IDF %>% head()
+
+trump_IDF %>%
+  arrange(desc(tf))
+```
+
+
+```{r}
+
+set.seed(1)
+trump_dtm <- trump_tidy %>%
+  count(ID,word) %>%
+  cast_dtm(document = ID, term = word, value = n, weighting = tm::weightTf)
+
+trump_lda <- trump_dtm %>% 
+  LDA(k = 3, method = "Gibbs",
+      control = list(seed = 1337))
+
+trump_beta <- trump_lda %>% 
+  tidy(matrix = "beta") %>%
+  group_by(topic) %>%
+  arrange(topic, desc(beta)) %>%
+  slice(1:10) %>%
+  ungroup() 
+
+trump_beta %>% head(10)
+```
+
+```{r}
+trump_beta %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  group_by(topic, term) %>%    
+  arrange(desc(beta)) %>%  
+  ungroup() %>%
+  ggplot(aes(term, beta, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  scale_x_reordered() +
+  labs(title = "Top 10 terms in each LDA topic",
+       x = NULL, y = expression(beta)) +
+  facet_wrap(~ topic, ncol = 2, scales = "free")
+```
+
+```{r}
+
+```
+
