@@ -26,7 +26,9 @@ pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.
                rsample,
                quanteda,
                text2vec,
-               umap
+               uwot,
+               dbscan,
+               caret
 )
 ```
 
@@ -76,7 +78,7 @@ trump_tidy %>%
 
 ```{r}
 
-grepl("climate",x = trump_tweet$text) %>% 
+grepl("Climate",x = trump_tweet$text) %>% 
 sum()
 
 grepl("renewable",x = trump_tweet$text) %>% 
