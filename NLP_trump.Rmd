@@ -28,8 +28,11 @@ pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.
                text2vec,
                uwot,
                dbscan,
-               caret
+               caret,
+               kableExtra
 )
+
+set.seed(1)
 ```
 
 # Bag-o-Words
@@ -61,9 +64,11 @@ trump_tidy %<>%
   mutate(word = word %>% str_remove_all("[^[:alnum:]]") ) %>%
   filter(str_length(word) > 1) 
 
-trump_tidy %>% 
+kable(trump_tidy %>% 
   count(word, sort = TRUE) %>% 
-  head(20)
+  head(20)) %>% 
+  kable_styling(c("condensed","bordered","striped","hover"), full_width = F, position = "left") %>% 
+ add_header_above(c("Most used words" =2))
 
 trump_tidy %>% 
   count(word, sort = TRUE) %>% 
@@ -95,10 +100,9 @@ sum()
 
 trump_tidy %>% 
   group_by(ID) %>% 
-  filter(word =="climate") %>% 
+  filter(word =="Climate") %>% 
   count() %>% 
  arrange(desc(n))
-
 
 trump_tidy %>% 
   group_by(ID) %>% 
@@ -118,7 +122,7 @@ trump_top <- trump_tidy %>%
   count(word, sort = TRUE) %>% 
   head(20)
 
-wordcloud(trump_top$word, trump_top$n, random.order = FALSE, max.words = 50, colors = brewer.pal(8,"Dark2"))
+wordcloud(trump_top$word, trump_top$n, random.order = FALSE, colors = brewer.pal(8,"Dark2"))
 ```
 ## TF-IDF
 
@@ -129,15 +133,11 @@ trump_IDF  <- trump_tidy %>%
 
 trump_IDF %>% head()
 
-trump_IDF %>%
-  arrange(desc(tf))
 ```
 
 # LDA
 
-```{r}
-
-set.seed(1)
+```{r fig.height=12, fig.width=20}
 trump_dtm <- trump_tidy %>%
   count(ID,word) %>%
   cast_dtm(document = ID, term = word, value = n, weighting = tm::weightTf)
@@ -152,9 +152,7 @@ trump_beta <- trump_lda %>%
   arrange(topic, desc(beta)) %>%
   slice(1:10) %>%
   ungroup() 
-```
 
-```{r fig.height=12, fig.width=20}
 trump_beta %>%
   mutate(term = reorder_within(term, beta, topic)) %>%
   group_by(topic, term) %>%    
@@ -170,72 +168,74 @@ trump_beta %>%
 ```
 # Sentiment 
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 #AFINN numeric score 
 #bing positive negative label 
 #nrc labels words as fear, joy, etc
 
+k <- 10
+
 trump_sentiment <- trump_tidy %>%  
-  inner_join(get_sentiments("afinn")) %>% 
-  group_by(ID) %>% 
-  summarise(sentiment = sum(value)) %>% 
+inner_join(get_sentiments("afinn")) %>% 
+group_by(ID) %>% 
+summarise(sentiment = sum(value)) 
+
+#trump_sentiment %>% 
+#  arrange(desc(sentiment)) %>% 
+#  head(5)
+#
+#trump_sentiment %>% 
+#  arrange(sentiment) %>% 
+#  head(5)
+#
+#trump_sentiment %>% 
+#  count(sentiment) %>%  
+#  arrange(desc(n)) 
+
+df_n<-trump_tweet %>% 
+  filter(ID %in% (trump_sentiment %>% 
+  arrange(sentiment)%>% 
+    select(ID) %>% 
+  head(k) %>% 
+  use_series(ID)  )) %>% 
+  left_join((trump_sentiment %>% 
+  arrange(sentiment) %>% 
+  head(k) ), by = "ID") %>% 
+  rename("Tweet text" = text)%>% 
+  select(-date) %>% 
   arrange(sentiment)
 
-trump_sentiment %>% head()
+df_p<-trump_tweet %>% 
+  filter(ID %in% (trump_sentiment %>% 
+  arrange(desc(sentiment))%>% 
+    select(ID) %>% 
+  head(k) %>% 
+  use_series(ID)  )) %>% 
+  left_join((trump_sentiment %>% 
+  arrange(desc(sentiment)) %>% 
+  head(k)), by = "ID") %>% 
+  rename("Tweet text" = text)%>% 
+  select(-date) %>% 
+  arrange(desc(sentiment))
 
-trump_sentiment %>% 
-  count(sentiment) %>%  
-  arrange(desc(n)) 
+kable(cbind(df_n,df_p)) %>% 
+  kable_styling(c("condensed","bordered","striped","hover")) %>% 
+ add_header_above(c("Negative" = 3, "Positive" =3))
 ```
 
-```{r}
-trump_sentiment_b <- trump_tidy %>%  
-  inner_join(get_sentiments("bing")) %>% 
-  group_by(ID) %>% 
-  arrange(sentiment)
-
-trump_sentiment_b %>% head()
-
-trump_sentiment_b %>% 
-  count(sentiment) %>%
-  filter(sentiment == "negative")%>% 
-arrange(desc(n))
-
-
-```
-
-```{r}
-trump_sentiment_nrc <- trump_tidy %>% 
+```{r message=FALSE, warning=FALSE}
+trump_tidy %>% 
   inner_join(get_sentiments("nrc") %>% filter(sentiment == "fear")) %>% 
-  count(word, sort= TRUE)
-
-trump_sentiment_nrc %>%  head()
+  count(word, sort= TRUE) %>% 
+  head()
 ```
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 trump_sentiment_p <- trump_tidy %>%  
   inner_join(get_sentiments("afinn")) %>% 
   group_by(date) %>% 
   summarise(sentiment = sum(value)) %>% 
    mutate(mood = ifelse(sentiment >= 0, "positive","negative"))
-
-trump_sentiment_p %>% head()
-
-trump_sentiment_p %>% 
-  ggplot() +
-  geom_line(aes(date, sentiment, color = mood, group=0)) +
-  theme_light() +
-  scale_color_manual(values = c("positive" = 'blue', "negative" = 'red'))
-
-
-
-trump_sentiment_p %>% 
-  ggplot(aes(date, sentiment, color = mood)) +
-  geom_point() +
-  theme_light() +
-  scale_color_manual(values = c("positive" = 'blue', "negative" = 'red')) + 
-  geom_smooth(aes(group=0))
-
 
 trump_sentiment_p %>% 
   group_by(week(date), year(date)) %>% 
@@ -248,7 +248,7 @@ trump_sentiment_p %>%
   theme_light() +
   scale_color_manual(values = c("positive" = 'blue', "negative" = 'red')) + 
   scale_fill_manual(values = c("positive" = 'blue', "negative" = 'red')) + 
-  geom_smooth(aes(group=0), se=F)
+  geom_smooth(aes(group=0), color = "black", se=F)
 
 
 ```
@@ -294,7 +294,7 @@ trump_vectors <- trump_tidy2 %>%
 trump_vectors %>% head()
 ```
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 trump_vectors %<>%
   select(-term, -count) %>%
   group_by(document) %>%
