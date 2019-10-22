@@ -11,7 +11,7 @@ output:
     collapsed: no
 ---
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 if (!require("pacman")) install.packages("pacman") # package for loading and checking packages :)
 pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.)
                magrittr, # For advanced piping (%>% et al.)
@@ -32,6 +32,7 @@ pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.
 )
 ```
 
+# Bag-o-Words
 
 ```{r message=FALSE, warning=FALSE}
 trump_tweet <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/Trump_tweets.csv")  %>% rename(ID = X1) %>% select(-2)
@@ -76,6 +77,8 @@ trump_tidy %>%
 
 ```
 
+## Counts
+
 ```{r}
 
 grepl("Climate",x = trump_tweet$text) %>% 
@@ -108,6 +111,7 @@ trump_tidy %>%
 
 ```
 
+## visualization
 
 ```{r}
 trump_top <- trump_tidy %>% 
@@ -116,6 +120,8 @@ trump_top <- trump_tidy %>%
 
 wordcloud(trump_top$word, trump_top$n, random.order = FALSE, max.words = 50, colors = brewer.pal(8,"Dark2"))
 ```
+## TF-IDF
+
 ```{r}
 trump_IDF  <- trump_tidy %>% 
   count(ID, word, sort = TRUE) %>% 
@@ -127,6 +133,7 @@ trump_IDF %>%
   arrange(desc(tf))
 ```
 
+# LDA
 
 ```{r}
 
@@ -161,7 +168,7 @@ trump_beta %>%
        x = NULL, y = expression(beta)) +
   facet_wrap(~ topic, ncol = 2, scales = "free")
 ```
-## Sentiment 
+# Sentiment 
 
 ```{r}
 #AFINN numeric score 
@@ -245,7 +252,7 @@ trump_sentiment_p %>%
 
 
 ```
-## GloVe
+# GloVe
 ```{r}
 trump_corp <- trump_tweet %>%  corpus(docid_field = "ID", text_field = "text")
 
