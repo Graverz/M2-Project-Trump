@@ -1,3 +1,4 @@
+
 ```{r}
 if (!require("pacman")) install.packages("pacman") # package for loading and checking packages :)
 pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.)
@@ -144,7 +145,7 @@ ggplot(df, aes(.metric, .estimate, fill = reorder(model, desc(.estimate)))) +
   geom_col(position = "dodge", width = 0.6) + 
   scale_fill_brewer(palette="Paired") + 
   labs(title = "Model performance", 
-       subtitle = "The model beats a random assignment in all metrics", 
+       subtitle = "", 
        fill = "Predictive Model")
 ```
 
@@ -165,4 +166,5 @@ model$glmnet.fit %>%
           x=NULL, y=NULL) +
   scale_y_continuous(limits=c(-1.5,1.5), breaks=seq(-1,1,by=0.5)) +
     facet_wrap(~class, scales="free_y")
-```
+
+ff %>% group_by(class) %>% count()
