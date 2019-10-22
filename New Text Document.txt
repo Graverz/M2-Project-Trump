@@ -1,0 +1,168 @@
+```{r}
+if (!require("pacman")) install.packages("pacman") # package for loading and checking packages :)
+pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.)
+               magrittr, # For advanced piping (%>% et al.)
+               tidytext, # For text analysis
+               tm,
+               topicmodels,
+               lubridate,
+               wordcloud,
+               mice,
+               rsample,
+               glmnet,
+               yardstick
+)
+```
+
+```{r}
+SP500 <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/SP500.csv", col_types = cols(SP500 = col_number()))
+SP500$DATE <- as_date(SP500$DATE)
+SP500 <- SP500 %>% rename(date="DATE")
+SP500$Year <- year(SP500$date)
+
+#Data imputation
+Imputation <- mice(SP500, m=5, maxit = 50, method = 'pmm', seed = 500)
+SP500 <- complete(Imputation,1)
+
+SP500$Procent <- (SP500$SP500-lag(SP500$SP500))/lag(SP500$SP500)*100
+SP500 <- SP500 %>% filter(Year==2017 | Year==2018)  
+hist(SP500$Procent)
+
+SP500$Class1 <- ifelse(-0.2<SP500$Procent & SP500$Procent<0.2,"Niether",ifelse(SP500$Procent>=0.2, "Positive", ifelse(SP500$Procent<=-0.2, "Negative", "")))
+SP500$Class1 <- as.factor(SP500$Class1)
+```
+
+```{r}
+trump_tweet <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/Trump_tweets.csv") %>% rename(ID = X1)
+trump_tidy <- trump_tweet %>%  
+  unnest_tokens(word, text) 
+trump_tidy %<>%
+  add_count(word, name = "nword") %>%
+  filter(nword > 1) %>%
+    select(-nword)
+trump_tidy %<>% 
+  group_by(word) %>% 
+  filter(n()>8) %>% 
+  ungroup()
+own_stopwords <- tibble(word= c("t.co", "https", "amp", "rstats","rt", "", "a.m", "p.m", "a.g"),
+                        lexicon = "OWN")
+trump_tidy %<>%
+  anti_join(stop_words %>% bind_rows(own_stopwords), by = "word") 
+trump_tidy %<>%
+  mutate(word = word %>% removeNumbers(ucp=F)) %>%
+  filter(str_length(word) > 1) 
+```
+
+```{r}
+model_data <- trump_tidy %>% 
+              left_join(SP500, by="date")
+model_data <- model_data %>% filter(SP500!=" ")
+
+class_join <- model_data %>% 
+  select(ID, Class1) %>% unique()
+
+trump_tweet1 <- trump_tweet %>% 
+  left_join(class_join, by= "ID") %>% 
+  filter(Class1!="")
+```
+
+```{r}
+model_split <- trump_tweet1 %>% select(ID) %>% initial_split()
+train_data <- training(model_split)
+test_data <- testing(model_split)
+```
+
+```{r}
+sparse_word <- model_data %>% 
+  count(ID, word) %>% 
+  inner_join(train_data) %>% 
+  cast_sparse(ID,word,n)
+
+dim(sparse_word)
+```
+
+```{r}
+word_rowname <- as.integer(rownames(sparse_word))
+joined <- data.frame(ID=word_rowname) %>% 
+  left_join(trump_tweet1) %>% 
+  select(ID, Class1)
+```
+```{r}
+model <- cv.glmnet(sparse_word, joined$Class1, family="multinomial", keep=T)
+```
+
+```{r}
+coefs <- model$glmnet.fit %>%
+  tidy() %>%
+  filter(lambda == model$lambda.1se)
+
+classifications <- model_data %>%
+  inner_join(test_data) %>%
+  inner_join(coefs, by = c("word" = "term")) %>%
+  group_by(class, ID) %>%
+  summarize(score = sum(estimate)) %>%
+  mutate(probability = plogis(0 + score))
+
+cla <- classifications %>% 
+  group_by(ID) %>% 
+  filter(probability == max(probability)) %>% 
+  left_join(trump_tweet1, by="ID")
+
+result <- table(cla$class, cla$Class1)
+result
+c0 <- result[1,1]/sum(result[1,])
+c1 <- result[2,2]/sum(result[2,])
+c2 <- result[3,3]/sum(result[3,])
+cA <- sum(result[1,1]+result[2,2]+result[3,3])/sum(result)
+result2 <- as.data.frame(c(c0,c1,c2,cA))
+result2 <- result2 %>% rename(Result = "c(c0, c1, c2, cA)")
+rownames(result2) <- c("Negative", "Niether", "Positive", "Overall")
+result2
+```
+
+```{r}
+set.seed(17102019)
+
+prop <- trump_tweet1 %>% 
+  group_by(Class1) %>% 
+  summarize(n = n())%>%
+  mutate(freq = n / sum(n))
+
+ran <- table(cla$class, sample(c("Negative", "Positive", "Niether"), nrow(cla), replace = T, prob = prop$freq))
+ran
+```
+
+```{r}
+ran <- rbind(spec(ran), precision(ran), accuracy(ran), recall(ran), npv(ran))
+res <- rbind(spec(result), precision(result), accuracy(result), recall(result), npv(result))
+
+res$model <- "Elastic Net"
+ran$model <- "Random Assignment"
+df <- rbind(res, ran)
+
+ggplot(df, aes(.metric, .estimate, fill = reorder(model, desc(.estimate)))) + 
+  geom_col(position = "dodge", width = 0.6) + 
+  scale_fill_brewer(palette="Paired") + 
+  labs(title = "Model performance", 
+       subtitle = "The model beats a random assignment in all metrics", 
+       fill = "Predictive Model")
+```
+
+```{r}
+model$glmnet.fit %>%
+  tidy()  %>% 
+  filter(lambda == model$lambda.1se) %>%
+  group_by(estimate > 0, class) %>%
+  top_n(10, abs(estimate)) %>% 
+  ggplot(aes(reorder_within(term, estimate, class), estimate, fill = estimate > 0)) +
+    geom_col(alpha = 0.8, show.legend = FALSE, width=0.8) +
+    coord_flip() +
+  geom_hline(aes(yintercept=0)) +
+    scale_x_reordered() +
+    scale_fill_brewer(palette = "Paired") +
+    labs( title = "Coefficients for the heighest weighted words in the penalized multinomial logistic regression model",
+          subtitle = "", 
+          x=NULL, y=NULL) +
+  scale_y_continuous(limits=c(-1.5,1.5), breaks=seq(-1,1,by=0.5)) +
+    facet_wrap(~class, scales="free_y")
+```
