@@ -1,21 +1,15 @@
 ---
-title: "M2_group"
-author: "Jess"
-date: "21 oktober 2019"
-output:  
-    html_document:
+title: "SDS 2019 - M2: Group Assignment"
+author: "Andreas, Simon, Jess, Lars"
+date: "14/9/2019"
+output:
+  html_document:
     code_folding: hide
     theme: flatly
     toc: yes
     toc_float:
-    collapsed: no
+      collapsed: no
 ---
-Colab:
-https://colab.research.google.com/github/SDS-AAU/M1-2019/blob/master/notebooks/exercises/M1_2_dataviz_ex1.ipynb#sandboxMode=true&scrollTo=FOZeA_izCc3C
-Trump Tweets:
-http://www.trumptwitterarchive.com/
-
-
 ```{r message=FALSE, warning=FALSE}
 if (!require("pacman")) install.packages("pacman") # package for loading and checking packages :)
 pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.)
@@ -38,15 +32,404 @@ pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.
                mice,
                glmnet,
                rsample,
-               yardstick
+               yardstick,
+               igraph,
+               tidygraph,
+               ggraph,
+               geosphere,
+               maps,
+               gridExtra,
+               knitr
 )
-
 set.seed(1)
+
+air <- read_csv("https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv", na = character())
+base <- "#91cf60"
 ```
+Colab: https://colab.research.google.com/drive/1PhMeARbtLYwAEyB6beZal7DNZTxt8_bA#scrollTo=FOZeA_izCc3C
+
+The project is divided into two parts and we know that this is not optimal, but cause of the limited time, we have chosen to structure the project this way. The first part is a network analysis of the world’s 600 biggest airports, where we want to study the patterns/connections between them and then relate the finding to electric driven airplanes, which requirements do these have to fulfill before they can replace the fossil driven planes. The second part of the project is about Trump’s tweets, where we hope to find some interesting features in these tweets and then use those to predict an interesting “topic”. We have chosen our “topic” to be the stock market, where we want to see if Trump has an impact on the S&P500-index, this is done by building a ML-model, which can predict this. 
+
+# Electric Air Travle (Network)
+First we start by preparing the data. And we look at it by continent and type
+
+```{r message=FALSE, warning=FALSE}
+cc <- strsplit(air$coordinates, "[,]")
+air <- air %>%  
+  mutate(lon = unlist(cc)[2*(1:length(air$coordinates))-1],
+         lat = unlist(cc)[2*(1:length(air$coordinates))  ])
+air$cont <- ifelse(air$continent == "NA", "North America", 
+            ifelse(air$continent == "SA", "South America",
+            ifelse(air$continent == "EU", "Europe",
+            ifelse(air$continent == "AS", "Asia",
+            ifelse(air$continent == "AF", "Africa",
+            ifelse(air$continent == "OC", "Oceania", "Antartica"))))))
+air %>% 
+  group_by(type) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n)) %>% 
+  kable() %>% 
+  kable_styling(c("bordered", "condensed","hover"), full_width = F)
+```
+
+From this we see that there is alot of small airports, almost 34000. As we're interested in calculating the distance between every airport, and therefore square the number of airports, this is too much as it will give 1.155.864.004 distances to calculate. We therefore only look at large airports as this will give us $613^2$ which is 375.769 distances to caluclate. If we look at where these airports are located we find: 
+
+```{r}
+air %>% 
+  filter(type == "large_airport") %>% 
+  group_by(cont) %>% 
+  summarize(n = n()) %>% 
+  arrange(desc(n)) %>% 
+  kable() %>% 
+  kable_styling(c("bordered", "condensed","hover"), full_width = F)
+```
+
+We now calculate all the distances in kilometers by the coordinates and save them for use in the networks.
+
+```{r message=FALSE, warning=FALSE}
+air_large <- air %>% 
+  filter(type == "large_airport") %>% 
+  group_by(name) %>% 
+  summarise_all(.funs = first)
+m <- air_large %>% select(lat, lon) %>% 
+  mutate(lat = as.numeric(lat),
+         lon = as.numeric(lon)) %>% 
+  as.matrix()
+dista <- distm(m, fun = distHaversine) %>% as.data.frame()
+names(dista) <- air_large$name
+dista$name <- air_large$name
+mm <- dista %>% gather(to, value,-name) %>% mutate(value = value /1000) %>% rename(from = name)
+```
+
+## Visualisation
+But before we plot some networks we find plot the airports on a world map just to see what we're dealing with
+
+```{r fig.height=4, fig.width=10}
+WorldData <- ggplot2::map_data('world') %>% filter(region != "Antarctica") %>% fortify()
+ggplot() +
+  geom_map(data = WorldData, map = WorldData,
+           aes(x = long, y = lat, group = group, map_id=region),
+           fill = "white", colour = "#7f7f7f", size=0.5) + 
+  coord_map("rectangular", lat0=0, xlim=c(-180,180), ylim=c(-60, 90)) +
+  geom_point(data=air_large, aes(x=as.numeric(lat), y=as.numeric(lon), color=cont), alpha=0.7) +
+    scale_color_brewer(palette="RdYlGn") +
+    scale_y_continuous(breaks=c()) +
+    scale_x_continuous(breaks=c()) +
+    labs(fill="legend", title="Map of large airports", x="", y="") +
+    theme_minimal()
+```
+
+Our challenge is to find how the world is connected if we loose access to long distance commercial flights and have to replace all air travle with short rance battery powered flights. So we look at this with some different distances. If the distance is too short there is no connections, and if it's too long everything is connected. We start out with showing how the airports of the world starts clustering as we slowly increase the distance in the network from 50 to 750 km.
+
+
+```{r fig.height=10, fig.width=10}
+df <- data.frame(id        = air_large$name, 
+                 region    = air_large$cont,
+                 short     = air_large$ident,
+                 elevation = air_large$elevation_ft,
+                 country   = air_large$iso_country)
+air_n100 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 100) %N>%
+  filter(!node_is_isolated())
+air_n200 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 200) %N>%
+  filter(!node_is_isolated())
+air_n300 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 300) %N>%
+  filter(!node_is_isolated())
+air_n400 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 400) %N>%
+  filter(!node_is_isolated())
+air_n500 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 500) %N>%
+  filter(!node_is_isolated())
+air_n600 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 600) %N>%
+  filter(!node_is_isolated())
+air_n700 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 700) %N>%
+  filter(!node_is_isolated())
+air_n800 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 800) %N>%
+  filter(!node_is_isolated())
+air_n900 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 900) %N>%
+  filter(!node_is_isolated())
+air_n1000 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 1000) %N>%
+  filter(!node_is_isolated())
+air_n1500 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 1500) %N>%
+  filter(!node_is_isolated())
+air_n2000 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 2000) %N>%
+  filter(!node_is_isolated())
+air_n2500 <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 2500) %N>%
+  filter(!node_is_isolated())
+```
+
+
+
+## Networks {.tabset .tabset-fade .tabset-pills}
+
+### kk
+
+```{r fig.height=9, fig.width=12}
+fri_pp <- list()
+for (i in 1:15) {
+  a <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < (i*100/2)) %N>%
+  filter(!node_is_isolated())
+  
+  fri_pp[[i]] <- ggraph(a, layout = "kk") +
+     geom_edge_link(alpha=0.9) + 
+     geom_node_point(aes(color=region), size=2, alpha=0.6, show.legend = F) +
+     scale_color_brewer(palette="RdYlGn") +
+     theme_void() + labs(title=paste0(i*100/2, " Km seperation"))
+}
+fri_pp$nrow <- 3
+do.call(grid.arrange, fri_pp)
+```
+
+
+### stress
+
+```{r fig.height=9, fig.width=12}
+fri_pp <- list()
+for (i in 1:15) {
+  a <- tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < (i*100/2)) %N>%
+  filter(!node_is_isolated())
+  
+  fri_pp[[i]] <- ggraph(a, layout = "stress") +
+     geom_edge_link(alpha=0.9) + 
+     geom_node_point(aes(color=region), size=2, alpha=0.6, show.legend = F) +
+     scale_color_brewer(palette="RdYlGn") +
+     theme_void() + labs(title=paste0(i*100/2, " Km seperation"))
+}
+fri_pp$nrow <- 3
+do.call(grid.arrange, fri_pp)
+```
+
+
+## Network characteristics
+
+In plot we see that around 300 km. some serious clusters start forming in US and Europe. This is assuring that with a small range of 300 km we would still be able to travle most of Europe, but it wouldn't be possible to make the journey to US. Even at 750 there is still no connection between US and Europe, even though europe is starting to have great connections in asia and the middleeast.
+
+We can plot some charateristics of the network:
+
+```{r fig.height=4, fig.width=13}
+network <- as.character(c(seq(100,1000, by=100),1500,2000,2500)) %>% as.factor() %>% reorder(sort(as.numeric(.)))
+lll <- list(air_n100, air_n200, air_n300, air_n400,air_n500, air_n600, air_n700, air_n800,air_n900,air_n1000, air_n1500,air_n2000,air_n2500)
+dat <- data.frame(network,
+                  densities      = unlist(lapply(lll, edge_density)),
+                  transitivities = unlist(lapply(lll, transitivity)),
+                  components     = unlist(lapply(lll, count_components)),
+                  mortifs        = unlist(lapply(lll, count_motifs))/1000,
+                  diameter       = unlist(lapply(lll, diameter)),
+                  cliques        = unlist(lapply(lll, clique_num)))
+dat %>% 
+  gather(variable, value, -network) %>% 
+  ggplot(aes(network, value)) + 
+  geom_col(position="dodge", width=0.9, fill=base) + 
+  labs(title="Network level characteristics", x="", y="", fill="distance") + 
+  facet_wrap(~variable, scales="free", nrow=2)
+  
+```
+
+We see here that
+
+- cliques: The longer distance creates more and more cliques
+- components: we get fewer and fewer parts of the whole plot, and would end up in just one component if just the distance is large enough
+- densities: We see a smooth increase in density as we increase range
+- diameter: 
+- mortifs:
+- transitivities: 
+
+as the network is non directed it means that reciprocity is 1 for all the networks.
+
+
+## Network centrality
+We are also interested in seeing what airports are the most central, we utilize three centrality measures and do the analisis on 3 networks, 300, 500 and 1000 km.
+
+```{r fig.height=10, fig.width=10}
+a <- air_n300 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in"),
+         centrality_eigen = centrality_eigen(),
+         centrality_betweenness = centrality_betweenness(),
+         id2 = substr(id, 1, 30)) %N>% 
+  as.tibble() %>%
+  gather(variable,value, -id,-id2,-region,-short,-country, -elevation) %>% 
+  group_by(variable) %>% 
+  top_n(40, wt = value) %>% 
+  ggplot(aes(reorder_within(id2, value, variable), value, fill=region)) + 
+  geom_col(width=0.8) + 
+  scale_x_reordered() +
+  scale_fill_brewer(palette="RdYlGn") +
+  coord_flip() + 
+  theme(axis.text.y = element_text(size=4)) + 
+  facet_wrap(~variable, scales = "free") +
+  labs(x="",y="",title="Centrality of airports within 300 km")
+b <- air_n500 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in"),
+         centrality_eigen = centrality_eigen(),
+         centrality_betweenness = centrality_betweenness(),
+         id2 = substr(id, 1, 30)) %N>% 
+  as.tibble() %>%
+  gather(variable,value, -id,-id2,-region,-short,-country, -elevation) %>% 
+  group_by(variable) %>% 
+  top_n(40, wt = value) %>% 
+  ggplot(aes(reorder_within(id2, value, variable), value, fill=region)) + 
+  geom_col(width=0.8) + 
+  scale_x_reordered() +
+  scale_fill_brewer(palette="RdYlGn") +
+  coord_flip() + 
+  theme(axis.text.y = element_text(size=4)) + 
+  facet_wrap(~variable, scales = "free") +
+  labs(x="",y="",title="Centrality of airports within 500 km")
+c <- air_n1000 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in"),
+         centrality_eigen = centrality_eigen(),
+         centrality_betweenness = centrality_betweenness(),
+         id2 = substr(id, 1, 30)) %N>% 
+  as.tibble() %>%
+  gather(variable,value, -id,-id2,-region,-short,-country, -elevation) %>% 
+  group_by(variable) %>% 
+  top_n(40, wt = value) %>% 
+  ggplot(aes(reorder_within(id2, value, variable), value, fill=region)) + 
+  geom_col(width=0.8) + 
+  scale_x_reordered() +
+  scale_fill_brewer(palette="RdYlGn") +
+  coord_flip() + 
+  theme(axis.text.y = element_text(size=4)) + 
+  facet_wrap(~variable, scales = "free") +
+  labs(x="",y="",title="Centrality of airports within 1000 km")
+grid.arrange(a,b,c)
+```
+
+We see that in the first two networks in eigen centrality europe dominates, that is because the airports are close here, but with 1000 km we see how that the greater number of airports in the us counts high. we also here see that in the betweenness measure some airports in Asia scores high. This is because they end up ad the connectors between Europe and asia.
+
+What does this mea? well, if planes got restricted to 1000km, some of the most well connected airports would be in US (Louisville International Standiford Field and Nashville International Airport), but to travle the longest distance, then airports in Asia (Koltsovo Airport in Yekaterinburg and Astana International Airport) would be the most central.
+
+With a medium distance of 500km EBBR - Brussels Airport does pretty well
+
+
+## Overall network 300km
+We see here the network of 300km, there is a still manny places you can't reach
+
+```{r fig.height=5, fig.width=10}
+air_n300 %>% 
+  ggraph(layout = "kk") + 
+  geom_edge_link(alpha=0.5) + 
+  geom_node_point(aes(color=region),alpha=0.85, size=7) +
+  scale_color_brewer(palette="RdYlGn") +
+  geom_node_text(aes(label = short), size=1.5, color="white") +
+  labs(title="Color by centrality - 300 km") + theme_void()
+```
+
+
+### Centrality
+Here we plot the networks with centrality as color and size
+
+
+```{r fig.height=5, fig.width=10}
+a <- air_n100 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in")) %>% 
+  ggraph(layout = "mds") + 
+  geom_node_point(aes(color=centrality_dgr, size=centrality_dgr), alpha=0.6) +
+  geom_edge_link(alpha=0.2, color="white") +
+  scale_size(range=c(3,10), breaks = c(1,3,6)) +
+  scale_color_viridis_c(guide = "legend", breaks = c(1,3,6), option = "inferno") + 
+  #geom_node_text(aes(label = short), size=0.7, color="white") +
+  labs(title="Color by centrality - 100 km") + theme_void()+ theme(legend.position="bottom")
+b <- air_n300 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in")) %>% 
+  ggraph(layout = "mds") + 
+  geom_node_point(aes(color=centrality_dgr, size=centrality_dgr), alpha=0.6) +
+  geom_edge_link(alpha=0.1, color="white") +
+  scale_size(range=c(3,10), breaks = c(1,9,18)) +
+  scale_color_viridis_c(guide = "legend", breaks = c(1,9,18), option = "inferno") + 
+  #geom_node_text(aes(label = short), size=0.7, color="white") +
+  labs(title="Color by centrality - 300 km") + theme_void()+ theme(legend.position="bottom")
+c <- air_n500 %N>% 
+  mutate(centrality_dgr = centrality_degree(mode = "in")) %>% 
+  ggraph(layout = "mds") + 
+  geom_node_point(aes(color=centrality_dgr, size=centrality_dgr), alpha=0.6) +
+  geom_edge_link(alpha=0.05, color="white") +
+  scale_size(range=c(3,10), breaks = c(1,15,30)) +
+  scale_color_viridis_c(guide = "legend", breaks = c(1,15,30), option = "inferno") + 
+  #geom_node_text(aes(label = short), size=0.7, color="white") +
+  labs(title="Color by centrality - 500 km") + theme_void()+ theme(legend.position="bottom")
+grid.arrange(a,b,c,nrow = 1)
+```
+
+
+### assortativity 
+We calculate the assortativity of country and region
+
+```{r fig.height=3, fig.width=10}
+r <- c("value", "type", "network")
+r1 <- c(assortativity(air_n100, V(air_n100)$region),               "REGION",    "100")
+r2 <- c(assortativity(air_n100, V(air_n100)$country),              "COUNTRY",   "100")
+r3 <- c(assortativity(air_n200, V(air_n200)$region),               "REGION",    "200")
+r4 <- c(assortativity(air_n200, V(air_n200)$country),              "COUNTRY",   "200")
+r5 <- c(assortativity(air_n300, V(air_n300)$region),               "REGION",    "300")
+r6 <- c(assortativity(air_n300, V(air_n300)$country),              "COUNTRY",   "300")
+r7 <- c(assortativity(air_n400, V(air_n400)$region),               "REGION",    "400")
+r8 <- c(assortativity(air_n400, V(air_n400)$country),              "COUNTRY",   "400")
+r9 <- c(assortativity(air_n500, V(air_n500)$region),               "REGION",    "500")
+r10 <- c(assortativity(air_n500, V(air_n500)$country),              "COUNTRY",  "500")
+r11 <- c(assortativity(air_n600, V(air_n600)$region),               "REGION",   "600")
+r12 <- c(assortativity(air_n600, V(air_n600)$country),              "COUNTRY",  "600")
+r13 <- c(assortativity(air_n700, V(air_n700)$region),               "REGION",   "700")
+r14 <- c(assortativity(air_n700, V(air_n700)$country),              "COUNTRY",  "700")
+r15 <- c(assortativity(air_n800, V(air_n800)$region),               "REGION",   "800")
+r16 <- c(assortativity(air_n800, V(air_n800)$country),              "COUNTRY",  "800")
+r17 <- c(assortativity(air_n900, V(air_n900)$region),               "REGION",   "900")
+r18 <- c(assortativity(air_n900, V(air_n900)$country),              "COUNTRY",  "900")
+df <- as.data.frame(rbind(r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14,r15,r16,r17,r18))
+names(df) <- r
+df$value <- as.numeric(as.character(df$value))
+ggplot(df, aes(network, value)) + 
+  geom_col(fill=base) + 
+  facet_wrap(~type, nrow=1) + 
+  labs(title="Assortativity by country and region")
+```
+
+We see that assortivity falls fast as distance increase, this makes sense as countries are small areas, and therefore it's expected to be most clusteded by country when the networks are small
+
+
+
+
+```{r}
+df <- data.frame(id        = air_large$name, 
+                 region    = air_large$cont,
+                 short     = air_large$ident,
+                 elevation = air_large$elevation_ft,
+                 country   = air_large$iso_country)
+tbl_graph(edges = mm, nodes = df) %E>% 
+  filter(value < 3000) %>%
+  ggraph(layout = "stress") + 
+  #geom_edge_link(alpha=0.5) + 
+  geom_node_point(aes(color=region), size=2) +
+  scale_color_brewer(palette="RdYlGn") +
+  #geom_node_text(aes(label = id), size=2) +
+  labs(title="map") + theme_void()
+```
+
+
+
+
+
+
+
+# Trump's tweets (NLP)
+Trump Tweets:http://www.trumptwitterarchive.com/
 
 # Bag-o-Words
 
-President Donald Trump�s Tweets from 2017-2018 is downloaded and the tokenized. Afterwards the data is cleaned and manipulated.
+President Donald Trump’s Tweets from 2017-2018 is downloaded and the tokenized. Afterwards the data is cleaned and manipulated.
 - Tweets with only one word is filtered away
 - Words that only appear 8 times and less are left out. 
 - Defined stop words are removed 
@@ -55,10 +438,8 @@ President Donald Trump�s Tweets from 2017-2018 is downloaded and the tokenized. 
 
 ```{r message=FALSE, warning=FALSE}
 trump_tweet <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/Trump_tweets.csv")  %>% rename(ID = X1) %>% select(-2)
-
 trump_tidy <- trump_tweet %>%  
   unnest_tokens(word, text) 
-
 trump_tidy <- trump_tweet %>%  
   unnest_tokens(word, text) 
 trump_tidy %<>%
@@ -73,18 +454,14 @@ own_stopwords <- tibble(word= c("t.co", "https", "amp", "rstats","rt", "", "a.m"
                         lexicon = "OWN")
 trump_tidy %<>%
   anti_join(stop_words %>% bind_rows(own_stopwords), by = "word") 
-
 trump_tidy %<>%
   mutate(word = word %>% str_remove_all("[^[:alnum:]]") ) %>%
   filter(str_length(word) > 1) 
-
 trump_tidy %<>%
   anti_join(stop_words %>% bind_rows(own_stopwords), by = "word") 
 trump_tidy %<>%
   mutate(word = word %>% removeNumbers(ucp=F)) %>%
   filter(str_length(word) > 1) 
-
-
 ```
 
 The most used words are depicted in the table and graph below.
@@ -95,7 +472,6 @@ kable(trump_tidy %>%
   head(20)) %>% 
   kable_styling(c("condensed","bordered","striped","hover"), full_width = F, position = "left") %>% 
  add_header_above(c("Most used words" =2))
-
 trump_tidy %>% 
   count(word, sort = TRUE) %>% 
   head(20) %>% 
@@ -115,14 +491,13 @@ A wordcloud of the twenty most used words in Donald Trump's Tweets (scaled by nu
 trump_top <- trump_tidy %>% 
   count(word, sort = TRUE) %>% 
   head(20)
-
 wordcloud(trump_top$word, trump_top$n, random.order = FALSE, colors = brewer.pal(8,"Dark2"))
 ```
 ## TF-IDF
 
-The easiest approach to add statistical information on frequency is to apply tf-idf weights. TFIDF, short for term frequency�inverse document frequency, is a numerical statistic that is intended to reflect how important a word is to a document in a collection or corpus. The tf�idf value increases proportionally to the number of times a word appears in the document and is offset by the number of documents in the corpus that contain the word, which helps to adjust for the fact that some words appear more frequently in general.
+The easiest approach to add statistical information on frequency is to apply tf-idf weights. TFIDF, short for term frequency–inverse document frequency, is a numerical statistic that is intended to reflect how important a word is to a document in a collection or corpus. The tf–idf value increases proportionally to the number of times a word appears in the document and is offset by the number of documents in the corpus that contain the word, which helps to adjust for the fact that some words appear more frequently in general.
 
-TF - �Term frequency�: The proportion of words in a text that are that term. TF(t) = (Number of times term t appears in a document) / (Total number of terms in the document).
+TF - ‘Term frequency’: The proportion of words in a text that are that term. TF(t) = (Number of times term t appears in a document) / (Total number of terms in the document).
 IDF - inverse document frequency: The weight of how common a term is across all documents. Measures how important a term is. The more often a word appears in a text the less weight it receives. IDF = Log(Total number of tweets / total number of tweets where the word appears)
 
 As it can be seen Trump is very excited for jobs.
@@ -131,9 +506,7 @@ As it can be seen Trump is very excited for jobs.
 trump_IDF  <- trump_tidy %>% 
   count(ID, word, sort = TRUE) %>% 
   bind_tf_idf(word, ID, n)
-
 trump_IDF %>% arrange(desc(tf)) %>%  head(5)
-
 ```
 
 # LDA
@@ -143,7 +516,7 @@ LDA seeks to find groups of related words. It is an iterative, generative algori
 1) During initialization, which is that each word will be assigned to a random topic which the model puts together. 2) The algorithm goes through each word iteratively and then reassigns the word to a specific topic with the following considerations:
 The probability that the word belongs to a specific topic(Beta)
 The probability that the document will be generated by a topic (Gamma)
-The idea behind the LDA topic model is that words belonging to a topic appear together in a specific document. The algorithm tries to model each document as a mixture of topics and each topic as a mixture of words. After this it�s possible to use the probability that a word belongs to a particular topic to classify it accordingly.
+The idea behind the LDA topic model is that words belonging to a topic appear together in a specific document. The algorithm tries to model each document as a mixture of topics and each topic as a mixture of words. After this it’s possible to use the probability that a word belongs to a particular topic to classify it accordingly.
 
 LDA is used to find topics in Donald Trump's Tweets. Different amounts of topics where tried and 9 topics yielded the most distinct and clear topics. The topics and the appropriate categories are shown below.
 
@@ -151,18 +524,15 @@ LDA is used to find topics in Donald Trump's Tweets. Different amounts of topics
 trump_dtm <- trump_tidy %>%
   count(ID,word) %>%
   cast_dtm(document = ID, term = word, value = n, weighting = tm::weightTf)
-
 trump_lda <- trump_dtm %>% 
   LDA(k = 9, method = "Gibbs",
       control = list(seed = 1337))
-
 trump_beta <- trump_lda %>% 
   tidy(matrix = "beta") %>%
   group_by(topic) %>%
   arrange(topic, desc(beta)) %>%
   slice(1:10) %>%
   ungroup() 
-
 trump_beta %>%
   mutate(term = reorder_within(term, beta, topic)) %>%
   group_by(topic, term) %>%    
@@ -185,8 +555,6 @@ mutate(topic = recode(topic,
   labs(title = "Top 10 terms in each LDA topic",
        x = NULL, y = expression(beta)) +
   facet_wrap(~ topic, ncol = 3, scales = "free") 
-
-
 ```
 # Sentiment 
 
@@ -194,12 +562,10 @@ Sentiment analysis is created to find the 5 most positive and negative tweets by
 
 ```{r message=FALSE, warning=FALSE}
 k <- 5
-
 trump_sentiment <- trump_tidy %>%  
 inner_join(get_sentiments("afinn")) %>% 
 group_by(ID) %>% 
 summarise(sentiment = sum(value)) 
-
 df_n<-trump_tweet %>% 
   filter(ID %in% (trump_sentiment %>% 
   arrange(sentiment)%>% 
@@ -212,7 +578,6 @@ df_n<-trump_tweet %>%
   rename("Tweet text" = text)%>% 
   select(-date) %>% 
   arrange(sentiment)
-
 df_p<-trump_tweet %>% 
   filter(ID %in% (trump_sentiment %>% 
   arrange(desc(sentiment))%>% 
@@ -225,8 +590,6 @@ df_p<-trump_tweet %>%
   rename("Tweet text" = text)%>% 
   select(-date) %>% 
   arrange(desc(sentiment))
-
-
 kable(cbind(df_n,df_p)) %>% 
   kable_styling(c("condensed","bordered","striped","hover")) %>% 
  add_header_above(c("Negative" = 3, "Positive" =3))
@@ -249,7 +612,6 @@ trump_sentiment_p <- trump_tidy %>%
   group_by(date) %>% 
   summarise(sentiment = sum(value)) %>% 
    mutate(mood = ifelse(sentiment >= 0, "positive","negative"))
-
 trump_sentiment_p %>% 
   group_by(week(date), year(date)) %>% 
   summarize(sentiment=sum(sentiment),
@@ -270,24 +632,19 @@ To perform the GloVe the a corpus object has to be created. Afterwards the data 
 
 ```{r}
 trump_corp <- trump_tweet %>%  corpus(docid_field = "ID", text_field = "text")
-
 trump_toks <- tokens(trump_corp, what = "word") %>%
   tokens_tolower() %>%
   tokens(remove_punct = TRUE, 
          remove_symbols = TRUE)
-
 trump_dfm <- dfm(trump_toks, verbose = TRUE) %>%
   dfm_trim(min_termfreq = 5) %>%
   featnames()
-
 trump_fcm <- fcm(trump_toks, 
                  context = "window", 
                  count = "weighted", 
                  weights = 1 / (1:5), 
                  tri = TRUE)
-
 glove <- GlobalVectors$new(word_vectors_size = 50, vocabulary = featnames(trump_fcm), x_max = 10)
-
 trump_word_vectors <- fit_transform(trump_fcm, glove, n_iter = 20)
 ```
 
@@ -303,10 +660,8 @@ trump_word_vectors %>% head()
 trump_tidy2 <- trump_toks %>% 
   dfm() %>% 
   tidy()
-
 trump_vectors <- trump_tidy2 %>%
   inner_join(trump_word_vectors, by = c("term" = "word"))
-
 trump_vectors %>% head()
 ```
 
@@ -315,7 +670,6 @@ trump_vectors %<>%
   select(-term, -count) %>%
   group_by(document) %>%
   summarise_all(mean)
-
 trump_vectors_umap <- umap(trump_vectors %>% column_to_rownames("document"), 
                        n_neighbors = 15, 
                        metric = "cosine", 
@@ -323,127 +677,71 @@ trump_vectors_umap <- umap(trump_vectors %>% column_to_rownames("document"),
                        scale = TRUE,
                        verbose = TRUE) %>% 
   as.data.frame()
-
 trump_vectors_umap %>% 
   ggplot(aes(x = V1, y = V2)) + 
   geom_point(shape = 21, alpha = 0.25) 
 ```
 
 # ML 
-
+Before we can set-up the model, we need to get data on the S&P500-index, where we have chosen to use the daily-data. The data used are collected from FRED, so not much cleaning are needed. However there is one thing we need to handle in this data-set. The dataset contains some missing values, so we need to do an imputation, because we can’t just remove these rows since our timeframe is pretty short, 2017-2018. We also convert the data to percent.  
 ```{r}
 SP500 <- read_csv("https://raw.githubusercontent.com/Graverz/M2-Project-Trump/master/SP500.csv", col_types = cols(SP500 = col_number()))
 SP500$DATE <- as_date(SP500$DATE)
 SP500 <- SP500 %>% rename(date="DATE")
 SP500$Year <- year(SP500$date)
-
 #Data imputation
 Imputation <- mice(SP500, m=5, maxit = 50, method = 'pmm', seed = 500)
 SP500 <- complete(Imputation,1)
-
 SP500$Procent <- (SP500$SP500-lag(SP500$SP500))/lag(SP500$SP500)*100
 SP500 <- SP500 %>% filter(Year==2017 | Year==2018)  
 hist(SP500$Procent)
+```
+On the histogram, it’s shown that most of the changes in the index lays in the interval of +1 to -1. Based on this knowledge we classifies the data into 3 class:
+- “Negative” for the range equal or below -0.2 percent.
+- “Neither” for the range above -0.2 percent and below 0.2 percent.
+- “Positive” for the range equal or above 0.2 percent. 
 
+```{r}
 SP500$Class1 <- ifelse(-0.2<SP500$Procent & SP500$Procent<0.2,"Niether",ifelse(SP500$Procent>=0.2, "Positive", ifelse(SP500$Procent<=-0.2, "Negative", "")))
 SP500$Class1 <- as.factor(SP500$Class1)
 ```
 
+Now we need to join our two datasets, tweets_tidy and S&P500. In doing so we see that there are occurring some missing data, which are generated by tweets in the weekends or holidays, where the stock market is closed. So we remove these rows. In the same time we need to add these classifications to our main tweet-data, which is a necessary step for our ML-prediction. 
 ```{r}
 model_data <- trump_tidy %>% 
               left_join(SP500, by="date")
 model_data <- model_data %>% filter(SP500!=" ")
-
 class_join <- model_data %>% 
   select(ID, Class1) %>% unique()
-
 trump_tweet1 <- trump_tweet %>% 
   left_join(class_join, by= "ID") %>% 
   filter(Class1!="")
 ```
 
+All the pre-steps are now done and we can start to “build” our model. First we split the data into two groups, a training set (75%) and a test set (25%). Thereafter we create a sparse matrix.
 ```{r}
 model_split <- trump_tweet1 %>% select(ID) %>% initial_split()
 train_data <- training(model_split)
 test_data <- testing(model_split)
-```
 
-```{r}
 sparse_word <- model_data %>% 
   count(ID, word) %>% 
   inner_join(train_data) %>% 
   cast_sparse(ID,word,n)
-
 dim(sparse_word)
 ```
+Our sparse matrix contains 3351 rows and 1518 words. Then we just need to finalize the training data before we have “built” our prediction ML-model.
 
 ```{r}
 word_rowname <- as.integer(rownames(sparse_word))
 joined <- data.frame(ID=word_rowname) %>% 
   left_join(trump_tweet1) %>% 
   select(ID, Class1)
-```
-```{r}
+
 model <- cv.glmnet(sparse_word, joined$Class1, family="multinomial", keep=T)
 ```
 
-```{r}
-coefs <- model$glmnet.fit %>%
-  tidy() %>%
-  filter(lambda == model$lambda.1se)
-
-classifications <- model_data %>%
-  inner_join(test_data) %>%
-  inner_join(coefs, by = c("word" = "term")) %>%
-  group_by(class, ID) %>%
-  summarize(score = sum(estimate)) %>%
-  mutate(probability = plogis(0 + score))
-
-cla <- classifications %>% 
-  group_by(ID) %>% 
-  filter(probability == max(probability)) %>% 
-  left_join(trump_tweet1, by="ID")
-
-result <- table(cla$class, cla$Class1)
-result
-c0 <- result[1,1]/sum(result[1,])
-c1 <- result[2,2]/sum(result[2,])
-c2 <- result[3,3]/sum(result[3,])
-cA <- sum(result[1,1]+result[2,2]+result[3,3])/sum(result)
-result2 <- as.data.frame(c(c0,c1,c2,cA))
-result2 <- result2 %>% rename(Result = "c(c0, c1, c2, cA)")
-rownames(result2) <- c("Negative", "Niether", "Positive", "Overall")
-result2
-```
-
-```{r}
-set.seed(17102019)
-
-prop <- trump_tweet1 %>% 
-  group_by(Class1) %>% 
-  summarize(n = n())%>%
-  mutate(freq = n / sum(n))
-
-ran <- table(cla$class, sample(c("Negative", "Positive", "Niether"), nrow(cla), replace = T, prob = prop$freq))
-ran
-```
-
-```{r}
-ran <- rbind(spec(ran), precision(ran), accuracy(ran), recall(ran), npv(ran))
-res <- rbind(spec(result), precision(result), accuracy(result), recall(result), npv(result))
-
-res$model <- "Elastic Net"
-ran$model <- "Random Assignment"
-df <- rbind(res, ran)
-
-ggplot(df, aes(.metric, .estimate, fill = reorder(model, desc(.estimate)))) + 
-  geom_col(position = "dodge", width = 0.6) + 
-  scale_fill_brewer(palette="Paired") + 
-  labs(title = "Model performance", 
-       subtitle = "", 
-       fill = "Predictive Model")
-```
-
+We can then show the top 10 words, both positive and negative, for each classification. The plots shows the coefficients for the heighest weighted words in the penalized multinomial elastic regression model.
 ```{r}
 model$glmnet.fit %>%
   tidy()  %>% 
@@ -456,10 +754,61 @@ model$glmnet.fit %>%
   geom_hline(aes(yintercept=0)) +
     scale_x_reordered() +
     scale_fill_brewer(palette = "Paired") +
-    labs( title = "Coefficients for the heighest weighted words in the penalized multinomial logistic regression model",
+    labs( title = "Coefficients for the heighest weighted words in the penalized multinomial elastic regression model",
           subtitle = "", 
           x=NULL, y=NULL) +
   scale_y_continuous(limits=c(-1.5,1.5), breaks=seq(-1,1,by=0.5)) +
     facet_wrap(~class, scales="free_y")
+```
 
-ff %>% group_by(class) %>% count()
+From the model we extract the coefficients and then join these with our test-dataset, and this joined dataset contains the predictions of the ML-model. We can then evaluate the results by making a confusing matrix and present the prediction-accuracy for each classification.
+```{r}
+coefs <- model$glmnet.fit %>%
+  tidy() %>%
+  filter(lambda == model$lambda.1se)
+classifications <- model_data %>%
+  inner_join(test_data) %>%
+  inner_join(coefs, by = c("word" = "term")) %>%
+  group_by(class, ID) %>%
+  summarize(score = sum(estimate)) %>%
+  mutate(probability = plogis(0 + score))
+cla <- classifications %>% 
+  group_by(ID) %>% 
+  filter(probability == max(probability)) %>% 
+  left_join(trump_tweet1, by="ID")
+result <- table(cla$class, cla$Class1)
+c0 <- result[1,1]/sum(result[1,])
+c1 <- result[2,2]/sum(result[2,])
+c2 <- result[3,3]/sum(result[3,])
+cA <- sum(result[1,1]+result[2,2]+result[3,3])/sum(result)
+result2 <- as.data.frame(c(c0,c1,c2,cA))
+result2 <- result2 %>% rename(Result = "c(c0, c1, c2, cA)")
+rownames(result2) <- c("Negative", "Niether", "Positive", "Overall")
+result2
+```
+These accuracies are not that good, so an alternative ways to evaluate the models is to compare it to a random assignment-model based on the distribution of the classes. 
+
+```{r}
+set.seed(17102019)
+prop <- trump_tweet1 %>% 
+  group_by(Class1) %>% 
+  summarize(n = n())%>%
+  mutate(freq = n / sum(n))
+ran <- table(cla$class, sample(c("Negative", "Positive", "Niether"), nrow(cla), replace = T, prob = prop$freq))
+ran
+
+ran <- rbind(spec(ran), precision(ran), accuracy(ran), recall(ran), npv(ran))
+res <- rbind(spec(result), precision(result), accuracy(result), recall(result), npv(result))
+res$model <- "Elastic Net"
+ran$model <- "Random Assignment"
+df <- rbind(res, ran)
+ggplot(df, aes(.metric, .estimate, fill = reorder(model, desc(.estimate)))) + 
+  geom_col(position = "dodge", width = 0.6) + 
+  scale_fill_brewer(palette="Paired") + 
+  labs(title = "Model performance", 
+       subtitle = "", 
+       fill = "Predictive Model")
+```
+We can on the plot above see that our ML-model are preforming better than the random assignment-model. To conclude the ML-process, we can from the ML-model see that Trumps tweets doesn’t have that big of an impact on the S&P500-index, since our models predictions accuracy are very low. 
+
+# Conclusion
