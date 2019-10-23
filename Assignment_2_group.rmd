@@ -42,8 +42,6 @@ pacman::p_load(tidyverse, # Standard datasciewnce toolkid (dplyr, ggplot2 et al.
                knitr
 )
 set.seed(1)
-
-air <- read_csv("https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv", na = character())
 base <- "#91cf60"
 ```
 Colab: https://colab.research.google.com/drive/1PhMeARbtLYwAEyB6beZal7DNZTxt8_bA#scrollTo=FOZeA_izCc3C
@@ -54,6 +52,7 @@ The project is divided into two parts and we know that this is not optimal, but 
 First we start by preparing the data. And we look at it by continent and type
 
 ```{r message=FALSE, warning=FALSE}
+air <- read_csv("https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv", na = character())
 cc <- strsplit(air$coordinates, "[,]")
 air <- air %>%  
   mutate(lon = unlist(cc)[2*(1:length(air$coordinates))-1],
