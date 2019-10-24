@@ -8,6 +8,6 @@ Code can be found in colab:
 
 html can be seen here:
 
-[Html](...LARS...)
+[Html] (...LARS...)
 
 (Til lars, evt et plot?)
