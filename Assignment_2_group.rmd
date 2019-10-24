@@ -46,6 +46,8 @@ base <- "#91cf60"
 ```
 Colab: https://colab.research.google.com/drive/1PhMeARbtLYwAEyB6beZal7DNZTxt8_bA#scrollTo=FOZeA_izCc3C
 
+Github: 
+
 The project is divided into two parts and we know that this is not optimal, but cause of the limited time, we have chosen to structure the project this way. The first part is a network analysis of the world’s 600 biggest airports, where we want to study the patterns/connections between them and then relate the finding to electric driven airplanes, which requirements do these have to fulfill before they can replace the fossil driven planes. The second part of the project is about Trump’s tweets, where we hope to find some interesting features in these tweets and then use those to predict an interesting “topic”. We have chosen our “topic” to be the stock market, where we want to see if Trump has an impact on the S&P500-index, this is done by building a ML-model, which can predict this. 
 
 # Electric Air Travle (Network)
