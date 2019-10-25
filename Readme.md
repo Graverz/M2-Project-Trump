@@ -10,4 +10,3 @@ html can be seen here:
 
 [Html](https://htmlpreview.github.io/?https://github.com/Graverz/M2-Project-Trump/blob/master/Final.html)
 
-(Til lars, evt et plot?)
